@@ -34,6 +34,247 @@ def start_client():
 
     # Cola de eventos para comunicación hilo->GUI
     event_queue = queue.Queue()
+    
+    # Función para abrir ventana de correo (T4. Servicios)
+    def abrir_ventana_correo():
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        
+        # --- Sesión en memoria ---
+        email_session = {'server': None, 'user': None, 'password': None, 'main_win': None}
+
+        def logout():
+            if email_session['main_win']:
+                email_session['main_win'].destroy()
+                email_session['main_win'] = None
+            email_session['server'] = None
+            email_session['user'] = None
+            email_session['password'] = None
+            abrir_ventana_correo()  # Volver a pedir login
+
+        def show_login():
+            login_win = tk.Toplevel(root)
+            login_win.title("Login Email")
+            login_win.geometry("350x250")
+            login_win.resizable(False, False)
+            login_win.configure(bg="#f5f5f5")
+            tk.Label(login_win, text="Acceso Email", font=('Helvetica', 15, 'bold'), bg="#f5f5f5").pack(pady=12)
+            frm = tk.Frame(login_win, bg="#f5f5f5")
+            frm.pack(pady=10)
+            tk.Label(frm, text="Servidor:", bg="#f5f5f5").grid(row=0, column=0, sticky="e", pady=4)
+            entry_server = tk.Entry(frm, width=22)
+            entry_server.insert(0, email_session['server'] or "10.10.0.101")
+            entry_server.grid(row=0, column=1, pady=4)
+            tk.Label(frm, text="Usuario:", bg="#f5f5f5").grid(row=1, column=0, sticky="e", pady=4)
+            entry_user = tk.Entry(frm, width=22)
+            if email_session['user']:
+                entry_user.insert(0, email_session['user'])
+            entry_user.grid(row=1, column=1, pady=4)
+            tk.Label(frm, text="Contraseña:", bg="#f5f5f5").grid(row=2, column=0, sticky="e", pady=4)
+            entry_pass = tk.Entry(frm, width=22, show="*")
+            if email_session['password']:
+                entry_pass.insert(0, email_session['password'])
+            entry_pass.grid(row=2, column=1, pady=4)
+            status = tk.Label(login_win, text="", bg="#f5f5f5", fg="red")
+            status.pack(pady=4)
+
+            def intentar_login():
+                import imaplib
+                server = entry_server.get().strip()
+                user = entry_user.get().strip()
+                password = entry_pass.get()
+                if not all([server, user, password]):
+                    status.config(text="Completa todos los campos")
+                    return
+                try:
+                    mail = imaplib.IMAP4(server, 143)
+                    mail.login(user, password)
+                    mail.logout()
+                    login_win.destroy()
+                    email_session['server'] = server
+                    email_session['user'] = user
+                    email_session['password'] = password
+                    mostrar_inbox_y_envio()
+                except Exception as e:
+                    status.config(text=f"Error: {e}")
+
+            tk.Button(login_win, text="Entrar", bg="#90EE90", font=('Arial', 11, 'bold'), width=12, command=intentar_login).pack(pady=10)
+
+        def mostrar_inbox_y_envio():
+            win = tk.Toplevel(root)
+            win.title(f"Correo - {email_session['user']}")
+            win.geometry("900x600")
+            win.configure(bg="#f5f5f5")
+            email_session['main_win'] = win
+            top = tk.Frame(win, bg="#f5f5f5")
+            top.pack(fill="x")
+            tk.Label(top, text=f"Usuario: {email_session['user']}", font=('Arial', 12, 'bold'), bg="#f5f5f5").pack(side="left", padx=10, pady=8)
+            tk.Button(top, text="Logout", bg="#ffcccc", command=logout).pack(side="right", padx=10, pady=8)
+            btns = tk.Frame(win, bg="#f5f5f5")
+            btns.pack(pady=4)
+            tk.Button(btns, text="📥 Ver INBOX", bg="#ddeeff", font=('Arial', 11), width=14, command=lambda: ver_correos_recibidos(email_session['server'], email_session['user'], email_session['password'], parent=win)).pack(side="left", padx=10)
+            tk.Button(btns, text="📤 Enviar", bg="#90EE90", font=('Arial', 11, 'bold'), width=12, command=lambda: abrir_envio_correo(email_session['server'], email_session['user'], email_session['password'])).pack(side="left", padx=10)
+            # Mostrar INBOX directamente
+            ver_correos_recibidos(email_session['server'], email_session['user'], email_session['password'], parent=win)
+
+        # Iniciar login o sesión
+        if not email_session['user']:
+            show_login()
+        else:
+            mostrar_inbox_y_envio()
+
+        # (Eliminada definición duplicada de ver_correos_recibidos)
+        def ver_correos_recibidos(server, usuario, contrasena, parent=None):
+            import imaplib, email, datetime
+            from email.utils import parsedate_to_datetime
+            imap_port = 143
+            # Si parent es None, crear ventana nueva, si no, usar parent
+            if parent is None:
+                win = tk.Toplevel(root)
+            else:
+                # Limpiar parent
+                for widget in parent.winfo_children():
+                    if isinstance(widget, ttk.Treeview) or isinstance(widget, tk.Label):
+                        widget.destroy()
+                win = parent
+            win.title(f"INBOX de {usuario}")
+            win.configure(bg="#f5f5f5")
+            tk.Label(win, text=f"INBOX de {usuario}", font=('Arial', 14, 'bold'), bg="#f5f5f5").pack(pady=8)
+            columns = ("De", "Asunto", "Fecha", "Acción")
+            tree = ttk.Treeview(win, columns=columns, show="headings", height=18)
+            for col, w in zip(columns, (200, 320, 120, 80)):
+                tree.heading(col, text=col)
+                tree.column(col, width=w, anchor="w")
+            tree.pack(padx=10, pady=8, fill="both", expand=True)
+            status = tk.Label(win, text="Cargando...", fg="gray", bg="#f5f5f5")
+            status.pack(pady=4)
+            correos = []
+            def cargar():
+                try:
+                    mail = imaplib.IMAP4(server, imap_port)
+                    mail.login(usuario, contrasena)
+                    mail.select('INBOX')
+                    typ, data = mail.search(None, 'ALL')
+                    ids = data[0].split()
+                    if not ids:
+                        status.config(text="No hay correos.")
+                        return
+                    for num in reversed(ids):
+                        typ, msg_data = mail.fetch(num, '(RFC822)')
+                        for response_part in msg_data:
+                            if isinstance(response_part, tuple):
+                                msg = email.message_from_bytes(response_part[1])
+                                asunto = email.header.decode_header(msg.get('Subject'))[0][0]
+                                if isinstance(asunto, bytes):
+                                    asunto = asunto.decode(errors='ignore')
+                                de = msg.get('From')
+                                fecha_raw = msg.get('Date')
+                                fecha = fecha_raw or ''
+                                try:
+                                    if fecha_raw:
+                                        fecha_dt = parsedate_to_datetime(fecha_raw)
+                                        fecha = fecha_dt.strftime('%d/%m/%Y %H:%M')
+                                except Exception:
+                                    pass
+                                correos.append((num, de, asunto, fecha, msg))
+                                tree.insert('', 'end', values=(de, asunto, fecha, 'Ver/Responder'))
+                    status.config(text=f"Mostrando {len(ids)} correos.")
+                    mail.logout()
+                except Exception as e:
+                    status.config(text=f"Error: {e}", fg="red")
+            threading.Thread(target=cargar, daemon=True).start()
+            def on_select(event):
+                item = tree.selection()
+                if not item:
+                    return
+                idx = tree.index(item[0])
+                num, de, asunto, fecha, msg = correos[idx]
+                detalle = tk.Toplevel(win)
+                detalle.title(f"Correo de {de}")
+                detalle.geometry("600x500")
+                detalle.configure(bg="#f5f5f5")
+                tk.Label(detalle, text=f"De: {de}", font=('Arial', 11, 'bold'), bg="#f5f5f5").pack(anchor="w", padx=12, pady=4)
+                tk.Label(detalle, text=f"Asunto: {asunto}", font=('Arial', 11), bg="#f5f5f5").pack(anchor="w", padx=12, pady=4)
+                tk.Label(detalle, text=f"Fecha: {fecha}", font=('Arial', 11), bg="#f5f5f5").pack(anchor="w", padx=12, pady=4)
+                tk.Label(detalle, text="Mensaje:", font=('Arial', 11, 'bold'), bg="#f5f5f5").pack(anchor="w", padx=12, pady=(8,0))
+                txt = tk.Text(detalle, width=70, height=14)
+                txt.pack(padx=12, pady=4)
+                cuerpo = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/plain" and not part.get('Content-Disposition'):
+                            try:
+                                cuerpo = part.get_payload(decode=True).decode(errors='ignore')
+                                break
+                            except:
+                                pass
+                else:
+                    try:
+                        cuerpo = msg.get_payload(decode=True).decode(errors='ignore')
+                    except:
+                        cuerpo = msg.get_payload()
+                txt.insert('1.0', cuerpo)
+                txt.config(state='disabled')
+                def responder():
+                    abrir_envio_correo(server, usuario, contrasena, reply_to=de, reply_subject=asunto)
+                tk.Button(detalle, text="Responder", bg="#90EE90", font=('Arial', 11, 'bold'), width=12, command=responder).pack(pady=10)
+            tree.bind('<Double-1>', on_select)
+
+        def abrir_envio_correo(server, user, password):
+            envio_win = tk.Toplevel(root)
+            envio_win.title("Enviar Correo")
+            envio_win.geometry("520x400")
+            envio_win.resizable(False, False)
+            envio_win.configure(bg="#f5f5f5")
+            tk.Label(envio_win, text="Enviar Correo", font=('Helvetica', 15, 'bold'), bg="#f5f5f5").pack(pady=10)
+            frm = tk.Frame(envio_win, bg="#f5f5f5")
+            frm.pack(pady=8)
+            tk.Label(frm, text="Para:", bg="#f5f5f5").grid(row=0, column=0, sticky="e", pady=4)
+            entry_to = tk.Entry(frm, width=35)
+            entry_to.grid(row=0, column=1, pady=4)
+            tk.Label(frm, text="Asunto:", bg="#f5f5f5").grid(row=1, column=0, sticky="e", pady=4)
+            entry_subject = tk.Entry(frm, width=35)
+            entry_subject.grid(row=1, column=1, pady=4)
+            tk.Label(frm, text="Mensaje:", bg="#f5f5f5").grid(row=2, column=0, sticky="ne", pady=4)
+            entry_body = tk.Text(frm, width=35, height=8)
+            entry_body.grid(row=2, column=1, pady=4)
+            status = tk.Label(envio_win, text="", bg="#f5f5f5", fg="gray")
+            status.pack(pady=4)
+            def enviar():
+                import smtplib
+                from email.mime.text import MIMEText
+                from email.mime.multipart import MIMEMultipart
+                to_addr = entry_to.get().strip()
+                subject = entry_subject.get().strip()
+                body = entry_body.get("1.0", "end-1c").strip()
+                if not all([to_addr, subject, body]):
+                    status.config(text="Completa todos los campos", fg="red")
+                    return
+                def worker():
+                    try:
+                        status.config(text="Enviando...", fg="blue")
+                        msg = MIMEMultipart()
+                        msg['From'] = user
+                        msg['To'] = to_addr
+                        msg['Subject'] = subject
+                        msg.attach(MIMEText(body, 'plain'))
+                        with smtplib.SMTP(server, 25, timeout=10) as smtp:
+                            try:
+                                smtp.starttls()
+                            except:
+                                pass
+                            if user and password:
+                                try:
+                                    smtp.login(user, password)
+                                except:
+                                    pass
+                            smtp.send_message(msg)
+                        status.config(text="✓ Correo enviado correctamente", fg="green")
+                    except Exception as e:
+                        status.config(text=f"✗ Error: {str(e)[:60]}", fg="red")
+                threading.Thread(target=worker, daemon=True).start()
+            tk.Button(envio_win, text="Enviar", bg="#90EE90", font=('Arial', 11, 'bold'), width=12, command=enviar).pack(pady=10)
 
     # Grid principal: top bar, main content, status
     root.columnconfigure(0, weight=0, minsize=240)
@@ -58,7 +299,10 @@ def start_client():
     ]
 
     def seleccionar_categoria(nombre):
-        info_label.config(text=f"Categoría seleccionada: {nombre}")
+        if nombre == 'T4. Servicios':
+            abrir_ventana_correo()
+        else:
+            info_label.config(text=f"Categoría seleccionada: {nombre}")
     # Creamos después info_label; el callback se ejecuta luego y tendrá acceso.
 
     for i, (texto, color) in enumerate(categorias):
@@ -530,21 +774,198 @@ def start_client():
     info_label = tk.Label(info, text="Panel para notas informativas y mensajes sobre la ejecución de los hilos.", bg="#f7fff0", anchor="w")
     info_label.pack(fill='both', expand=True, padx=8, pady=8)
 
-    # RIGHT: Chat y lista de alumnos
-    chat_box = tk.LabelFrame(right, text="Chat", padx=6, pady=6)
-    chat_box.pack(fill="x", padx=8, pady=(8,4))
-    tk.Label(chat_box, text="Mensaje").pack(anchor="w")
-    msg = tk.Text(chat_box, height=6)
-    msg.pack(fill="x", pady=4)
-    tk.Button(chat_box, text="enviar", bg="#cfe8cf").pack(pady=(0,6))
 
-    students = tk.LabelFrame(right, text="Alumnos", padx=6, pady=6)
-    students.pack(fill="both", expand=True, padx=8, pady=(4,8))
-    for i in range(1, 4):
-        s = tk.Frame(students)
-        s.pack(fill="x", pady=6)
-        tk.Label(s, text=f"Alumno {i}", font=("Helvetica", 13, "bold")).pack(anchor="w")
-        tk.Label(s, text="Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod.", wraplength=280, justify="left").pack(anchor="w")
+
+
+    # Chat único en panel derecho, requiere nombre de usuario y conexión
+
+    chat_box = tk.LabelFrame(right, text="Chat - Servidor", padx=6, pady=6)
+    chat_box.pack(fill="both", expand=True, padx=8, pady=(4,8))
+    chat_history = tk.Text(chat_box, height=18, state='disabled', bg='#f5f5f5', wrap='word')
+    chat_history.pack(fill="both", expand=True, pady=4)
+    chat_history.tag_config('tu', foreground='#1565C0', font=('Arial', 9, 'bold'))
+    chat_history.tag_config('otro', foreground='#388E3C', font=('Arial', 9))
+    chat_history.tag_config('sistema', foreground='#757575', font=('Arial', 8, 'italic'))
+    def agregar_chat(texto, tag='sistema'):
+        chat_history.config(state='normal')
+        chat_history.insert('end', texto + '\n', tag)
+        chat_history.see('end')
+        chat_history.config(state='disabled')
+
+    # Lista de usuarios conectados
+    users_frame = tk.Frame(chat_box)
+    users_frame.pack(fill="x", pady=(0,4))
+    tk.Label(users_frame, text="Conectados:").pack(side="left")
+
+    users_listbox = tk.Listbox(users_frame, height=4, width=24)
+    users_listbox.pack(side="left", padx=(2,8))
+
+    def escribir_privado(event):
+        seleccion = users_listbox.curselection()
+        if not seleccion:
+            return
+        usuario_destino = users_listbox.get(seleccion[0])
+        mi_usuario = entry_user.get().strip()
+        if usuario_destino == mi_usuario:
+            return
+        # Ventana para mensaje privado
+        win = tk.Toplevel(root)
+        win.title(f"Mensaje privado a {usuario_destino}")
+        win.geometry("350x180")
+        tk.Label(win, text=f"Privado para: {usuario_destino}", font=('Arial', 11, 'bold')).pack(pady=8)
+        entry_msg = tk.Text(win, height=4)
+        entry_msg.pack(fill="x", padx=10, pady=6)
+        def enviar():
+            texto = entry_msg.get("1.0", "end-1c").strip()
+            if texto:
+                msg_obj = {'type': 'msg', 'from': mi_usuario, 'text': texto, 'to': usuario_destino}
+                try:
+                    chat_state['socket'].send(json.dumps(msg_obj).encode('utf-8'))
+                    agregar_chat(f"(Privado a {usuario_destino}) {mi_usuario}: {texto}", 'tu')
+                except Exception as e:
+                    agregar_chat(f"Error al enviar: {e}", 'sistema')
+                win.destroy()
+        tk.Button(win, text="Enviar", bg="#cfe8cf", command=enviar).pack(pady=8)
+        entry_msg.focus_set()
+
+    users_listbox.bind('<Double-Button-1>', escribir_privado)
+
+    user_frame = tk.Frame(chat_box)
+    user_frame.pack(fill="x", pady=(0,4))
+    tk.Label(user_frame, text="Usuario:").pack(side="left")
+    entry_user = tk.Entry(user_frame, width=18)
+    entry_user.pack(side="left", padx=(2,8))
+    conn_frame = tk.Frame(chat_box)
+    conn_frame.pack(fill="x", pady=(0,4))
+    tk.Label(conn_frame, text="IP:").pack(side="left")
+    ip_entry = tk.Entry(conn_frame, width=12)
+    ip_entry.insert(0, "127.0.0.1")
+    ip_entry.pack(side="left", padx=(2,8))
+    tk.Label(conn_frame, text="Puerto:").pack(side="left")
+    puerto_entry = tk.Entry(conn_frame, width=6)
+    puerto_entry.insert(0, "3333")
+    puerto_entry.pack(side="left", padx=(2,8))
+    chat_state = {'socket': None, 'connected': False}
+
+    import json
+
+    def actualizar_usuarios(usuarios):
+        users_listbox.delete(0, 'end')
+        for u in usuarios:
+            users_listbox.insert('end', u)
+
+    def conectar():
+        if chat_state['connected']:
+            messagebox.showinfo("Chat", "Ya estás conectado")
+            return
+        try:
+            ip = ip_entry.get().strip()
+            puerto = int(puerto_entry.get().strip())
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, puerto))
+            usuario = entry_user.get().strip()
+            if not usuario:
+                messagebox.showwarning("Chat", "Debes poner un nombre de usuario")
+                return
+            # Enviar login
+            login_msg = json.dumps({'type': 'login', 'username': usuario}).encode('utf-8')
+            sock.send(login_msg)
+            chat_state['socket'] = sock
+            chat_state['connected'] = True
+            agregar_chat(f"Conectado a {ip}:{puerto}", 'sistema')
+            btn_conectar.config(text="Desconectar", bg="#ffcccc", command=desconectar)
+            def recibir():
+                while chat_state['connected']:
+                    try:
+                        data = sock.recv(1024)
+                        if not data:
+                            break
+                        try:
+                            msg = data.decode('utf-8')
+                            if msg.startswith('{'):
+                                obj = json.loads(msg)
+                                if obj.get('type') == 'user_list':
+                                    actualizar_usuarios(obj.get('users', []))
+                                elif obj.get('type') == 'msg':
+                                    remitente = obj.get('from', 'otro')
+                                    texto = obj.get('text', '')
+                                    es_privado = obj.get('private', False)
+                                    # Solo mostrar si el remitente no es el usuario actual
+                                    if remitente != entry_user.get().strip():
+                                        if es_privado:
+                                            agregar_chat(f"(Privado) {remitente}: {texto}", 'otro')
+                                        else:
+                                            agregar_chat(f"{remitente}: {texto}", 'otro')
+                                else:
+                                    agregar_chat(msg, 'sistema')
+                            else:
+                                agregar_chat(msg, 'otro')
+                        except Exception:
+                            agregar_chat(data.decode('utf-8'), 'otro')
+                    except:
+                        break
+                chat_state['connected'] = False
+                chat_state['socket'] = None
+                agregar_chat("Desconectado del servidor", 'sistema')
+                btn_conectar.config(text="Conectar", bg="#ddeeff", command=conectar)
+                actualizar_usuarios([])
+            threading.Thread(target=recibir, daemon=True).start()
+        except Exception as e:
+            agregar_chat(f"Error: {e}", 'sistema')
+
+    def desconectar():
+        if chat_state['connected'] and chat_state['socket']:
+            try:
+                chat_state['socket'].close()
+            except:
+                pass
+            chat_state['connected'] = False
+            chat_state['socket'] = None
+            agregar_chat("Desconectado", 'sistema')
+            btn_conectar.config(text="Conectar", bg="#ddeeff", command=conectar)
+            actualizar_usuarios([])
+
+    btn_conectar = tk.Button(conn_frame, text="Conectar", bg="#ddeeff", command=conectar)
+    btn_conectar.pack(side="left", padx=4)
+    tk.Label(chat_box, text="Mensaje:").pack(anchor="w")
+    msg = tk.Text(chat_box, height=3)
+    msg.pack(fill="x", pady=4)
+
+
+    def enviar_mensaje(event=None):
+        usuario = entry_user.get().strip()
+        if not usuario:
+            messagebox.showwarning("Chat", "Debes poner un nombre de usuario")
+            return "break"
+        if not chat_state['connected']:
+            messagebox.showwarning("Chat", "Primero conecta al servidor")
+            return "break"
+        texto = msg.get("1.0", "end-1c").strip()
+        if texto:
+            try:
+                seleccion = users_listbox.curselection()
+                to_users = []
+                for idx in seleccion:
+                    u = users_listbox.get(idx)
+                    if u != usuario:
+                        to_users.append(u)
+                msg_obj = {'type': 'msg', 'from': usuario, 'text': texto}
+                if len(to_users) == 1:
+                    msg_obj['to'] = to_users[0]
+                    agregar_chat(f"(Privado a {to_users[0]}) {usuario}: {texto}", 'tu')
+                elif len(to_users) > 1:
+                    msg_obj['to'] = to_users
+                    agregar_chat(f"(Grupo a {', '.join(to_users)}) {usuario}: {texto}", 'tu')
+                else:
+                    agregar_chat(f"{usuario}: {texto}", 'tu')
+                chat_state['socket'].send(json.dumps(msg_obj).encode('utf-8'))
+                msg.delete("1.0", "end")
+            except Exception as e:
+                agregar_chat(f"Error al enviar: {e}", 'sistema')
+        return "break"
+
+    msg.bind('<Return>', enviar_mensaje)
+    tk.Button(chat_box, text="Enviar", bg="#cfe8cf", command=enviar_mensaje).pack(pady=(0,6))
 
     # Reproductor música
     music_state = {'path': None, 'thread': None, 'playing': False, 'stopping': False}
@@ -597,52 +1018,6 @@ def start_client():
     tk.Button(music_box, text='Seleccionar', command=seleccionar_musica).pack(side='left', padx=2)
     tk.Button(music_box, text='Play', command=reproducir_musica).pack(side='left', padx=2)
     tk.Button(music_box, text='Stop', command=detener_musica).pack(side='left', padx=2)
-
-    # Chat cliente
-    chat_client = {'sock': None}
-    def conectar_chat():
-        if chat_client['sock']:
-            messagebox.showinfo('Chat','Ya conectado')
-            return
-        host = simpledialog.askstring('Host','Host chat', initialvalue='127.0.0.1')
-        port = simpledialog.askinteger('Puerto','Puerto', initialvalue=3333)
-        if not host or not port:
-            return
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((host, port))
-            chat_client['sock']=s
-            event_queue.put(('status', f'Chat conectado {host}:{port}'))
-            def receptor():
-                try:
-                    while True:
-                        data = s.recv(1024)
-                        if not data:
-                            break
-                        event_queue.put(('chat', data.decode(errors='ignore')))
-                except Exception as e:
-                    event_queue.put(('status', f'Error chat: {e}'))
-                finally:
-                    s.close(); chat_client['sock']=None
-                    event_queue.put(('status','Chat desconectado'))
-            threading.Thread(target=receptor, daemon=True).start()
-        except Exception as e:
-            messagebox.showerror('Chat', f'Error conexión: {e}')
-    def enviar_chat():
-        texto = msg.get('1.0','end').strip()
-        if not texto:
-            return
-        s = chat_client.get('sock')
-        if not s:
-            messagebox.showwarning('Chat','No conectado')
-            return
-        try:
-            s.send(texto.encode())
-            msg.delete('1.0','end')
-        except Exception as e:
-            event_queue.put(('status', f'Error envío: {e}'))
-    tk.Button(chat_box, text='Conectar', bg='#ddeeff', command=conectar_chat).pack(pady=(0,4))
-    tk.Button(chat_box, text='Enviar mensaje', bg='#cfe8cf', command=enviar_chat).pack(pady=(0,6))
 
     # Sección Sockets (TCP/UDP servers) añadida al panel izquierdo
     s_sockets = section(left, 'Sockets Locales')
@@ -805,8 +1180,112 @@ def start_client():
     # Servicios placeholders
     def servicio_pop3():
         event_queue.put(('status','POP3 placeholder (implementación futura)'))
+    
     def servicio_smtp():
-        event_queue.put(('status','SMTP placeholder (implementación futura)'))
+        """Ventana para enviar correo por SMTP"""
+        smtp_win = tk.Toplevel(root)
+        smtp_win.title("Enviar Correo - SMTP")
+        smtp_win.geometry("450x500")
+        smtp_win.resizable(False, False)
+        
+        # Configuración del servidor
+        config_frame = tk.LabelFrame(smtp_win, text="Configuración SMTP", padx=8, pady=8)
+        config_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(config_frame, text="Servidor SMTP:").grid(row=0, column=0, sticky="w", pady=2)
+        smtp_server = tk.Entry(config_frame, width=30)
+        smtp_server.insert(0, "10.10.0.101")
+        smtp_server.grid(row=0, column=1, pady=2)
+        
+        tk.Label(config_frame, text="Puerto:").grid(row=1, column=0, sticky="w", pady=2)
+        smtp_port = tk.Entry(config_frame, width=10)
+        smtp_port.insert(0, "25")
+        smtp_port.grid(row=1, column=1, sticky="w", pady=2)
+        
+        tk.Label(config_frame, text="Tu email:").grid(row=2, column=0, sticky="w", pady=2)
+        smtp_user = tk.Entry(config_frame, width=30)
+        smtp_user.grid(row=2, column=1, pady=2)
+        
+        tk.Label(config_frame, text="Contraseña:").grid(row=3, column=0, sticky="w", pady=2)
+        smtp_pass = tk.Entry(config_frame, width=30, show="*")
+        smtp_pass.grid(row=3, column=1, pady=2)
+        
+        # Datos del correo
+        mail_frame = tk.LabelFrame(smtp_win, text="Datos del Correo", padx=8, pady=8)
+        mail_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(mail_frame, text="Para:").grid(row=0, column=0, sticky="w", pady=2)
+        mail_to = tk.Entry(mail_frame, width=35)
+        mail_to.grid(row=0, column=1, pady=2)
+        
+        tk.Label(mail_frame, text="Asunto:").grid(row=1, column=0, sticky="w", pady=2)
+        mail_subject = tk.Entry(mail_frame, width=35)
+        mail_subject.grid(row=1, column=1, pady=2)
+        
+        tk.Label(mail_frame, text="Mensaje:").grid(row=2, column=0, sticky="nw", pady=2)
+        mail_body = tk.Text(mail_frame, width=35, height=8)
+        mail_body.grid(row=2, column=1, pady=2)
+        
+        # Estado
+        status_label = tk.Label(smtp_win, text="", fg="gray")
+        status_label.pack(pady=5)
+        
+        def enviar_correo():
+            import smtplib
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+            
+            server = smtp_server.get().strip()
+            port = smtp_port.get().strip()
+            user = smtp_user.get().strip()
+            password = smtp_pass.get()
+            to_addr = mail_to.get().strip()
+            subject = mail_subject.get().strip()
+            body = mail_body.get("1.0", "end-1c").strip()
+            
+            if not all([server, port, user, password, to_addr, subject, body]):
+                messagebox.showwarning("SMTP", "Completa todos los campos")
+                return
+            
+            def worker():
+                try:
+                    status_label.config(text="Conectando...", fg="blue")
+                    smtp_win.update()
+                    
+                    msg = MIMEMultipart()
+                    msg['From'] = user
+                    msg['To'] = to_addr
+                    msg['Subject'] = subject
+                    msg.attach(MIMEText(body, 'plain'))
+                    
+                    with smtplib.SMTP(server, int(port), timeout=10) as smtp:
+                        # Intentar TLS si está disponible (para servidores que lo soporten)
+                        try:
+                            smtp.starttls()
+                        except:
+                            pass  # Servidor local sin TLS
+                        # Login solo si hay credenciales
+                        if user and password:
+                            try:
+                                smtp.login(user, password)
+                            except:
+                                pass  # Servidor local sin autenticación
+                        smtp.send_message(msg)
+                    
+                    status_label.config(text="✓ Correo enviado correctamente", fg="green")
+                    event_queue.put(('status', f'Correo enviado a {to_addr}'))
+                except Exception as e:
+                    status_label.config(text=f"✗ Error: {str(e)[:50]}", fg="red")
+                    event_queue.put(('status', f'Error SMTP: {e}'))
+            
+            threading.Thread(target=worker, daemon=True).start()
+        
+        btn_frame = tk.Frame(smtp_win)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="Enviar Correo", bg="#90EE90", font=('Arial', 10, 'bold'), 
+                 command=enviar_correo).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Cerrar", command=smtp_win.destroy).pack(side="left", padx=5)
+    
     def servicio_ftp():
         event_queue.put(('status','FTP placeholder (implementación futura)'))
 

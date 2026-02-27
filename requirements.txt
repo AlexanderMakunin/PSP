@@ -1,0 +1,14 @@
+# Dependencias del proyecto PSP
+
+# Web scraping
+requests
+beautifulsoup4
+
+# Recursos del sistema
+psutil
+
+# Audio
+pygame
+
+# Criptografía
+cryptography
